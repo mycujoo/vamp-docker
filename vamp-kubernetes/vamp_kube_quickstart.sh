@@ -1,28 +1,52 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
-NAMESPACE=$1
+reset=$(tput sgr0)
+red=$(tput setaf 1)
+green=$(tput setaf 2)
+yellow=$(tput setaf 3)
 
-# assign namespace default if not given
-: ${NAMESPACE:=default}
+function parse_command_line() {
+    flag_help=0
+    flag_katana=0
 
-ETCD_YAML=https://raw.githubusercontent.com/magneticio/vamp-docker/master/vamp-kubernetes/etcd.yml
-VGA_YAML=https://raw.githubusercontent.com/magneticio/vamp.io/master/static/res/vga.yml
-ES_IMG=magneticio/elastic:2.2
-VAMP_IMG=magneticio/vamp:0.9.1-kubernetes
-KUBE_PROXY=magneticio/kubernetes-proxy
+    for key in "$@"
+    do
+    case ${key} in
+        -h|--help)
+        flag_help=1
+        ;;
+        -k|--katana)
+        flag_katana=1
+        ;;
+        -n=*|--namespace=*)
+        NAMESPACE="${key#*=}"
+        shift
+        ;;
+        *)
+        ;;
+    esac
+    done
+}
+
+function print_help() {
+    echo "${green}Usage of $0:${reset}"
+    echo "${yellow}  -h  |--help        ${green}Help.${reset}"
+    echo "${yellow}  -k  |--katana      ${green}Run Vamp katana.${reset}"
+    echo "${yellow}  -n=*|--namespace=* ${green}Kubernates namespace${reset}"
+}
 
 error() {
-    echo "[ERROR] $1"
+    echo "${red}[ERROR] $1${reset}"
     echo
     exit 1
 }
 
 step() {
-    echo "[STEP] $1"
+    echo "${yellow}[STEP] $1${reset}"
 }
 
 ok() {
-    echo "[OK] $1"
+    echo "${green}[OK] $1${reset}"
 }
 
 verify_kubectl() {
@@ -55,7 +79,7 @@ install_yaml() {
         error "Cannot apply ${1}, already present in ${NAMESPACE}"
     fi
 
-    ok "$2 created successfully"
+    ok "$1 created successfully"
 }
 
 expose() {
@@ -93,9 +117,54 @@ install() {
     run "kubernetes-proxy" ${KUBE_PROXY}
     expose "kubernetes-proxy" "TCP" 80 "kubernetes-proxy" "ClusterIP"
     expose "vamp" "TCP" 8080 "vamp" "LoadBalancer"
-
 }
-step "Vamp Kubernetes Quickstart running"
+
+echo "${green}
+╦  ╦╔═╗╔╦╗╔═╗  ╦╔═╦ ╦╔╗ ╔═╗╦═╗╔╗╔╔═╗╔╦╗╔═╗╔═╗  ╔═╗ ╦ ╦╦╔═╗╦╔═  ╔═╗╔╦╗╔═╗╦═╗╔╦╗
+╚╗╔╝╠═╣║║║╠═╝  ╠╩╗║ ║╠╩╗║╣ ╠╦╝║║║║╣  ║ ║╣ ╚═╗  ║═╬╗║ ║║║  ╠╩╗  ╚═╗ ║ ╠═╣╠╦╝ ║
+ ╚╝ ╩ ╩╩ ╩╩    ╩ ╩╚═╝╚═╝╚═╝╩╚═╝╚╝╚═╝ ╩ ╚═╝╚═╝  ╚═╝╚╚═╝╩╚═╝╩ ╩  ╚═╝ ╩ ╩ ╩╩╚═ ╩
+${reset}"
+
+parse_command_line $@
+
+if [ `kubectl config current-context` = "minikube" ]; then
+  flag_minikube=1
+else
+  flag_minikube=0
+fi
+
+if [ ${flag_help} -eq 1 ]; then
+    print_help
+    echo
+fi
+
+: "${ES_IMG:=magneticio/elastic:2.2}"
+
+if [ ${flag_katana} -eq 1 ]; then
+  echo "${green}katana    : ${yellow}yes${reset}"
+  : "${VGA_YAML:=https://raw.githubusercontent.com/magneticio/vamp-docker/master/vamp-kubernetes/vga.yml}"
+  : "${ETCD_YAML:=https://raw.githubusercontent.com/magneticio/vamp-docker/master/vamp-kubernetes/etcd.yml}"
+  : "${VAMP_IMG:=magneticio/vamp:katana-kubernetes}"
+else
+  echo "${green}katana    : ${yellow}no, otherwise use ${green}-k${yellow} or ${green}--katana${reset}"
+  : "${ETCD_YAML:=https://raw.githubusercontent.com/magneticio/vamp-docker/master/vamp-kubernetes/etcd.yml}"
+  : "${VGA_YAML:=https://raw.githubusercontent.com/magneticio/vamp.io/master/static/res/vga.yml}"
+  : "${VAMP_IMG:=magneticio/vamp:0.9.1-kubernetes}"
+fi
+
+if [ -z "${NAMESPACE}" ]; then
+  NAMESPACE="default"
+fi
+
+if [ ${flag_minikube} -eq 1 ]; then
+    echo "${green}minikube  : ${yellow}yes${reset}"
+fi
+
+echo "${green}namespace : ${yellow}$NAMESPACE${reset}"
+echo "${green}vga file  : ${yellow}$VGA_YAML${reset}"
+echo "${green}etcd file : ${yellow}$ETCD_YAML${reset}"
+echo "${green}ES image  : ${yellow}$ES_IMG${reset}"
+echo "${green}Vamp image: ${yellow}$VAMP_IMG${reset}"
 echo
 
 # run the pre install
@@ -104,19 +173,39 @@ verify_kubectl
 # run the installation on kubernetes
 install
 
-step "Polling kubernetes for external ip of Vamp..."
-# poll for the external ip address
-external_ip=""
-while [ -z $external_ip ]; do
-    sleep 5
-    external_ip=$(${KUBECTL} --namespace ${NAMESPACE} get svc vamp --template="{{range .status.loadBalancer.ingress}}{{.ip}}{{end}}")
+if [ ${flag_minikube} -eq 1 ]; then
+  step "Polling minikube for Vamp URL (this might take a while)..."
+  echo ${yellow}
+  url=$(minikube service --url vamp)
+  echo ${reset}
 
-    if [ ! $? = 0 ]; then
-        error "Failed to retrieve external ip address for vamp"
-    fi
+  if [ ! $? = 0 ]; then
+      error "Failed to retrieve Vamp URL"
+  fi
 
-    step "Still polling for Vamp ip..."
-done
+  [[ -n "$url" ]] \
+      && ok "Quickstart finished, Vamp is running on $url" \
+      && minikube service vamp &>/dev/null \
+      || error "Couldn't get Vamp URL, please check logs for more info."
+else
+  step "Polling kubernetes for external IP of Vamp (this might take a while)..."
 
-ok "Quickstart finished, Vamp is running on http://$external_ip:8080"
-exit 0
+  # poll for the external ip address, give up after 10 attempts
+  external_ip=""
+  for (( i=0; i<=9; i++ )) ; do
+      [[ -n "$external_ip" ]] && break
+      sleep 20
+
+      external_ip=$(${KUBECTL} --namespace ${NAMESPACE} get svc vamp --template="{{range .status.loadBalancer.ingress}}{{.ip}}{{end}}")
+
+      if [ ! $? = 0 ]; then
+          error "Failed to retrieve external Vamp IP"
+      fi
+
+      step "Still polling for Vamp IP..."
+  done
+
+  [[ -n "$external_ip" ]] \
+      && ok "Quickstart finished, Vamp is running on http://$external_ip:8080" \
+      || error "Couldn't get Vamp IP, please check logs for more info."
+fi
